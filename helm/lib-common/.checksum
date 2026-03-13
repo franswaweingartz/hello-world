@@ -1,0 +1,4 @@
+# lib-common chart integrity checksum
+# This file ensures the lib-common dependency hasn't been modified unexpectedly
+# Regenerate with: cd helm/lib-common && find . -type f \( -name "*.yaml" -o -name "*.tpl" \) -exec sha256sum {} \; | sort | sha256sum
+247e411c0a94fb310898543a931135e1a01d941bb929fbccc859b5b1604127b6

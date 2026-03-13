@@ -1,0 +1,104 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-helm:
+    name: Lint Helm Chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Install kubeconform
+        run: |
+          curl -L https://github.com/yannh/kubeconform/releases/download/v0.6.4/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Build Helm dependencies
+        run: helm dependency build
+        working-directory: ./helm/hello-world
+
+      - name: Verify lib-common integrity
+        run: |
+          EXPECTED_CHECKSUM=$(cat .checksum | tail -1)
+          ACTUAL_CHECKSUM=$(find . -type f \( -name "*.yaml" -o -name "*.tpl" \) -exec sha256sum {} \; | sort | sha256sum | awk '{print $1}')
+          if [ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]; then
+            echo "Error: lib-common chart has been modified!"
+            echo "Expected: $EXPECTED_CHECKSUM"
+            echo "Actual: $ACTUAL_CHECKSUM"
+            exit 1
+          fi
+          echo "lib-common integrity verified"
+        working-directory: ./helm/lib-common
+
+      - name: Verify dependency version
+        run: |
+          EXPECTED_VERSION="0.1.0"
+          ACTUAL_VERSION=$(helm dependency list | grep lib-common | awk '{print $2}')
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "Error: lib-common version mismatch. Expected: $EXPECTED_VERSION, Got: $ACTUAL_VERSION"
+            exit 1
+          fi
+          echo "Dependency version verified: $ACTUAL_VERSION"
+        working-directory: ./helm/hello-world
+
+      - name: Lint Helm chart
+        run: helm lint
+        working-directory: ./helm/hello-world
+
+      - name: Render Helm template
+        run: helm template test-release . --debug > rendered.yaml
+        working-directory: ./helm/hello-world
+
+      - name: Validate Kubernetes manifests
+        run: |
+          kubeconform -strict -summary -output json rendered.yaml
+        working-directory: ./helm/hello-world
+
+  lint-dockerfile:
+    name: Lint Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [lint-helm, lint-dockerfile]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: hello-world:${{ github.sha }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
